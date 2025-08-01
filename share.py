@@ -1,67 +1,46 @@
 pipeline {
-    agent { label 'macos' }
+    agent any
 
     environment {
-        // Android
         ANDROID_HOME = "/path/to/android/sdk"
-        KEYSTORE_PATH = credentials('android-keystore-file')
-        KEYSTORE_PASSWORD = credentials('android-keystore-password')
-        KEY_ALIAS = credentials('android-key-alias')
-        KEY_PASSWORD = credentials('android-key-password')
+        BUILD_TOOLS = "${ANDROID_HOME}/build-tools/34.0.0"
 
-        // iOS
-        CERT_PASSWORD = credentials('ios-cert-password')
-        SIGNING_IDENTITY = "iPhone Distribution: Your Company (TEAMID)"
-        PROVISIONING_PROFILE = "/path/to/profile.mobileprovision"
-
-        // macOS
-        MAC_SIGN_ID = "Developer ID Application: Your Name (TEAMID)"
+        KEYSTORE_FILE = credentials('android-keystore-file-id')
+        KEYSTORE_PASS = credentials('android-keystore-password-id')
+        KEY_ALIAS     = credentials('android-key-alias-id')
+        KEY_PASS      = credentials('android-key-password-id')
     }
 
     stages {
-        stage('Build Android') {
+        stage('Prepare Keystore') {
             steps {
-                sh './gradlew clean assembleRelease bundleRelease'
+                sh 'cp $KEYSTORE_FILE my-release-key.keystore'
             }
         }
 
-        stage('Sign Android APK & AAB') {
+        stage('Sign APK') {
             steps {
                 sh """
-                    ${ANDROID_HOME}/build-tools/34.0.0/apksigner sign \
-                      --ks $KEYSTORE_PATH \
+                    ${BUILD_TOOLS}/apksigner sign \
+                      --ks my-release-key.keystore \
                       --ks-key-alias $KEY_ALIAS \
-                      --ks-pass pass:$KEYSTORE_PASSWORD \
-                      --key-pass pass:$KEY_PASSWORD \
+                      --ks-pass pass:$KEYSTORE_PASS \
+                      --key-pass pass:$KEY_PASS \
                       --out app-release-signed.apk \
-                      app/build/outputs/apk/release/app-release-unsigned.apk
-
-                    jarsigner -keystore $KEYSTORE_PATH -storepass $KEYSTORE_PASSWORD -keypass $KEY_PASSWORD \
-                      app/build/outputs/bundle/release/app-release.aab $KEY_ALIAS
+                      app-release-unsigned.apk
                 """
             }
         }
 
-        stage('Build & Sign iOS IPA') {
+        stage('Sign AAB') {
             steps {
                 sh """
-                    xcodebuild -workspace YourApp.xcworkspace -scheme YourScheme -configuration Release \
-                      -archivePath build/YourApp.xcarchive archive
-
-                    xcodebuild -exportArchive -archivePath build/YourApp.xcarchive \
-                      -exportOptionsPlist ExportOptions.plist \
-                      -exportPath build/
-                """
-            }
-        }
-
-        stage('Sign macOS App and Zip') {
-            steps {
-                sh """
-                    codesign --deep --force --verify --verbose \
-                      --sign "$MAC_SIGN_ID" /path/to/YourApp.app
-
-                    ditto -c -k --sequesterRsrc --keepParent /path/to/YourApp.app YourApp.zip
+                    jarsigner \
+                      -keystore my-release-key.keystore \
+                      -storepass $KEYSTORE_PASS \
+                      -keypass $KEY_PASS \
+                      app-release.aab \
+                      $KEY_ALIAS
                 """
             }
         }
@@ -69,7 +48,7 @@ pipeline {
 
     post {
         success {
-            archiveArtifacts artifacts: '**/*.apk, **/*.aab, **/*.ipa, **/*.zip', fingerprint: true
+            archiveArtifacts artifacts: '*.apk, *.aab', fingerprint: true
         }
     }
 }
