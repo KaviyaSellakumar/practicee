@@ -1,0 +1,45 @@
+Started by user Kaviya  Sellakumar
+
+Rebuilds build #26
+
+[Pipeline] Start of Pipeline
+[Pipeline] stage
+[Pipeline] { (Sign Android)
+[Pipeline] node
+Running on Jenkins
+ in /var/lib/jenkins/workspace/TEST_SIGN_MAC_ANDROID_APPS
+[Pipeline] {
+[Pipeline] sh
++ echo ANDROID 
+ANDROID 
+[Pipeline] withCredentials
+Masking supported pattern matches of $ANDROID_PASSPHRASE or $AWS_SHARED_CREDENTIALS_FILE
+[Pipeline] {
+[Pipeline] script
+[Pipeline] {
+[Pipeline] sh
++ echo Workspace contents:
+Workspace contents:
++ ls -l
+total 0
+[Pipeline] sh
++ find . -maxdepth 1 -type f ( -name *.apk -o -name *.aab )
++ head -n 1
+[Pipeline] error
+[Pipeline] }
+[Pipeline] // script
+[Pipeline] }
+[Pipeline] // withCredentials
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Sign Mac/iOS)
+Stage "Sign Mac/iOS" skipped due to earlier failure(s)
+[Pipeline] getContext
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] End of Pipeline
+ERROR: INPUT_FILE is not set! Make sure a file was uploaded or S3 path is valid.
+Finished: FAILURE
