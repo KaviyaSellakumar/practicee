@@ -1,14 +1,7 @@
 pipeline {
     agent none
-
-    parameters {
-        choice(name: 'PLATFORM', choices: ['ANDROID', 'MAC', 'IOS'], description: 'Choose the platform')
-        choice(name: 'SOURCE_TYPE', choices: ['Upload', 'S3'], description: 'Choose the source type')
-        string(name: 'S3', defaultValue: '', description: 'S3 file path (required if SOURCE_TYPE is S3)')
-        file(name: 'UPLOAD_FILE', description: 'Upload the app file (required if SOURCE_TYPE is Upload)')
-    }
-
     stages {
+
         stage('Sign Android') {
             when {
                 expression { params.PLATFORM == 'ANDROID' }
@@ -24,36 +17,42 @@ pipeline {
                         def inputFile = ''
                         
                         if (params.SOURCE_TYPE == 'S3') {
-                            sh "aws s3 cp ${params.S3} ./downloaded_android_file"
-                            inputFile = 'downloaded_android_file'
+                            sh "aws s3 cp '${params.S3}' ./downloaded_file"
+                            inputFile = 'downloaded_file'
                         } else {
-                            sh "cp ${params.UPLOAD_FILE} ./uploaded_android_file"
-                            inputFile = 'uploaded_android_file'
+                            sh "echo 'Workspace contents:' && ls -l"
+                            inputFile = sh(script: "find . -maxdepth 1 -type f \\( -name '*.apk' -o -name '*.aab' \\) | head -n 1", returnStdout: true).trim()
+                        }
+
+                        if (!inputFile?.trim()) {
+                            error "❌ INPUT_FILE is not set! Ensure a file was uploaded or S3 path is valid."
                         }
 
                         echo "📦 Detected input file: ${inputFile}"
                         def ext = inputFile.tokenize('.').last()
 
                         if (ext == 'apk') {
-                            sh """apksigner sign \
+                            sh """
+                                apksigner sign \
                                 --ks "$WORKSPACE/certificate.jks" \
                                 --ks-key-alias "hexnodemdmapp" \
                                 --ks-pass pass:$ANDROID_PASSPHRASE \
                                 --key-pass pass:$ANDROID_PASSPHRASE \
                                 --out "signed_${inputFile}" \
-                                "${inputFile}" """
+                                "${inputFile}"
+                            """
                         } else if (ext == 'aab') {
-                            sh """jarsigner \
+                            sh """
+                                jarsigner \
                                 -keystore "$WORKSPACE/certificate.jks" \
                                 -storepass "$ANDROID_PASSPHRASE" \
                                 -keypass "$ANDROID_PASSPHRASE" \
                                 -signedjar "signed_${inputFile}" \
-                                "${inputFile}" hexnodemdmapp"""
+                                "${inputFile}" hexnodemdmapp
+                            """
                         } else {
                             error "❌ Unsupported Android file type: ${ext}"
                         }
-
-                        echo "✅ Signed file: signed_${inputFile}"
                     }
                 }
             }
@@ -74,11 +73,15 @@ pipeline {
                         def inputFile = ''
 
                         if (params.SOURCE_TYPE == 'S3') {
-                            sh "aws s3 cp ${params.S3} ./downloaded_apple_file"
-                            inputFile = 'downloaded_apple_file'
+                            sh "aws s3 cp '${params.S3}' ./downloaded_file"
+                            inputFile = 'downloaded_file'
                         } else {
-                            sh "cp ${params.UPLOAD_FILE} ./uploaded_apple_file"
-                            inputFile = 'uploaded_apple_file'
+                            sh "echo 'Workspace contents:' && ls -l"
+                            inputFile = sh(script: "find . -maxdepth 1 -type f \\( -name '*.ipa' -o -name '*.zip' \\) | head -n 1", returnStdout: true).trim()
+                        }
+
+                        if (!inputFile?.trim()) {
+                            error "❌ INPUT_FILE is not set! Ensure a file was uploaded or S3 path is valid."
                         }
 
                         echo "📦 Detected input file: ${inputFile}"
@@ -87,21 +90,20 @@ pipeline {
                         def baseName = fileName.replace(".${ext}", "")
 
                         if (ext == 'ipa') {
-                            sh "xcrun altool --sign --file ${inputFile}"
+                            sh "xcrun altool --sign --file '${inputFile}'"
                         } else if (ext == 'zip') {
                             sh """
-                                unzip ${inputFile}
-                                codesign -f --sign "Developer ID Application: Mitsogo Inc (BX6L6CPUN8)" ${baseName}.app
-                                ditto -c -k --sequesterRsrc --keepParent ${baseName}.app ${baseName}.app.zip
+                                unzip '${inputFile}'
+                                codesign -f --sign "Developer ID Application: Mitsogo Inc (BX6L6CPUN8)" "${baseName}.app"
+                                ditto -c -k --sequesterRsrc --keepParent "${baseName}.app" "${baseName}.app.zip"
                             """
                         } else {
                             error "❌ Unsupported Mac/iOS file type: ${ext}"
                         }
-
-                        echo "✅ Signed file for ${params.PLATFORM}"
                     }
                 }
             }
         }
+
     }
 }
