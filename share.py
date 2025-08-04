@@ -1,54 +1,97 @@
 pipeline {
-    agent any
-
-    environment {
-        ANDROID_HOME = "/path/to/android/sdk"
-        BUILD_TOOLS = "${ANDROID_HOME}/build-tools/34.0.0"
-
-        KEYSTORE_FILE = credentials('android-keystore-file-id')
-        KEYSTORE_PASS = credentials('android-keystore-password-id')
-        KEY_ALIAS     = credentials('android-key-alias-id')
-        KEY_PASS      = credentials('android-key-password-id')
-    }
-
+    agent none
     stages {
-        stage('Prepare Keystore') {
+        stage('Sign Android') {
+            agent { label 'built-in' }
             steps {
-                sh 'cp $KEYSTORE_FILE my-release-key.keystore'
+                sh '''
+                echo "$PLATFORM"
+                '''
+                withCredentials([
+                    string(credentialsId: 'ANDROID_KEY_PASSPHRASE', variable: 'ANDROID_PASSPHRASE'),
+                    file(credentialsId: 'jenkins_aws_credential', variable: 'AWS_SHARED_CREDENTIALS_FILE')
+                ]) {
+                    script {
+                        def inputFile = ''
+                        if (params.SOURCE_TYPE == 'S3') {
+                            sh "aws s3 cp ${params.S3} ./downloaded_file"
+                            inputFile = 'downloaded_file'
+                        } else {
+                            sh "echo 'Workspace contents:' && ls -l"
+                            inputFile = sh(script: "find . -maxdepth 1 -type f \\( -name '*.apk' -o -name '*.aab' \\) | head -n 1", returnStdout: true).trim()
+                        }
+
+                        if (!inputFile?.trim()) {
+                            error "INPUT_FILE is not set! Make sure a file was uploaded or S3 path is valid."
+                        }
+
+                        echo "📦 Detected input file: ${inputFile}"
+                        def ext = inputFile.tokenize('.').last()
+
+                        if (ext == 'apk') {
+                            sh """apksigner sign \
+                                --ks "$WORKSPACE/certificate.jks" \
+                                --ks-key-alias "hexnodemdmapp" \
+                                --ks-pass pass:$ANDROID_PASSPHRASE \
+                                --key-pass pass:$ANDROID_PASSPHRASE \
+                                --out "signed_${inputFile}" \
+                                "${inputFile}" """
+                        } else if (ext == 'aab') {
+                            sh """jarsigner \
+                                -keystore "$WORKSPACE/certificate.jks" \
+                                -storepass "$ANDROID_PASSPHRASE" \
+                                -keypass "$ANDROID_PASSPHRASE" \
+                                -signedjar "signed_${inputFile}" \
+                                "${inputFile}" hexnodemdmapp"""
+                        } else {
+                            error "Unsupported Android file type: ${ext}"
+                        }
+                    }
+                }
             }
         }
 
-        stage('Sign APK') {
-            steps {
-                sh """
-                    ${BUILD_TOOLS}/apksigner sign \
-                      --ks my-release-key.keystore \
-                      --ks-key-alias $KEY_ALIAS \
-                      --ks-pass pass:$KEYSTORE_PASS \
-                      --key-pass pass:$KEY_PASS \
-                      --out app-release-signed.apk \
-                      app-release-unsigned.apk
-                """
+        stage('Sign Mac/iOS') {
+            when {
+                expression { params.PLATFORM == 'MAC' || params.PLATFORM == 'IOS' }
             }
-        }
-
-        stage('Sign AAB') {
+            agent { label 'mac_mini_kochi' }
             steps {
-                sh """
-                    jarsigner \
-                      -keystore my-release-key.keystore \
-                      -storepass $KEYSTORE_PASS \
-                      -keypass $KEY_PASS \
-                      app-release.aab \
-                      $KEY_ALIAS
-                """
-            }
-        }
-    }
+                withCredentials([
+                    string(credentialsId: 'NOTARY_PASSWORD', variable: 'MAC'),
+                    file(credentialsId: 'jenkins_aws_credential', variable: 'AWS_SHARED_CREDENTIALS_FILE')
+                ]) {
+                    script {
+                        def inputFile = ''
+                        if (params.SOURCE_TYPE == 'S3') {
+                            sh "aws s3 cp ${params.S3} ./downloaded_file"
+                            inputFile = 'downloaded_file'
+                        } else {
+                            sh "echo 'Workspace contents:' && ls -l"
+                            inputFile = sh(script: "find . -maxdepth 1 -type f \\( -name '*.ipa' -o -name '*.zip' \\) | head -n 1", returnStdout: true).trim()
+                        }
 
-    post {
-        success {
-            archiveArtifacts artifacts: '*.apk, *.aab', fingerprint: true
+                        if (!inputFile?.trim()) {
+                            error "INPUT_FILE is not set! Make sure a file was uploaded or S3 path is valid."
+                        }
+
+                        echo "📦 Detected input file: ${inputFile}"
+                        def ext = inputFile.tokenize('.').last()
+                        def fileName = inputFile.tokenize('/').last()
+                        def baseName = fileName.replace(".${ext}", "")
+
+                        if (ext == 'ipa') {
+                            sh "xcrun altool --sign --file ${inputFile}"
+                        } else if (ext == 'zip') {
+                            sh """unzip ${inputFile}
+                                codesign -f --sign "Developer ID Application: Mitsogo Inc (BX6L6CPUN8)" ${baseName}.app
+                                ditto -c -k --sequesterRsrc --keepParent ${baseName}.app ${baseName}.app.zip"""
+                        } else {
+                            error "Unsupported Mac/iOS file type: ${ext}"
+                        }
+                    }
+                }
+            }
         }
     }
 }
