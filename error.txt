@@ -1,183 +1,171 @@
-Started by user Kaviya  Sellakumar
+#!/usr/bin/env python
 
-Rebuilds build #26
+import os
+import sys
+import csv
+import json
+import logging
+import argparse
+import requests
+from datetime import datetime, timedelta
+from os.path import expanduser
 
-[Pipeline] Start of Pipeline
-[Pipeline] stage
-[Pipeline] { (Sign Android)
-[Pipeline] node
-Running on Jenkins
- in /var/lib/jenkins/workspace/TEST_SIGN_MAC_ANDROID_APPS
-[Pipeline] {
-[Pipeline] sh
-+ echo ANDROID 
-ANDROID 
-[Pipeline] withCredentials
-Masking supported pattern matches of $ANDROID_PASSPHRASE or $AWS_SHARED_CREDENTIALS_FILE
-[Pipeline] {
-[Pipeline] script
-[Pipeline] {
-[Pipeline] sh
-+ echo Workspace contents:
-Workspace contents:
-+ ls -l
-total 0
-[Pipeline] sh
-+ find . -maxdepth 1 -type f ( -name *.apk -o -name *.aab )
-+ head -n 1
-[Pipeline] error
-[Pipeline] }
-[Pipeline] // script
-[Pipeline] }
-[Pipeline] // withCredentials
-[Pipeline] }
-[Pipeline] // node
-[Pipeline] }
-[Pipeline] // stage
-[Pipeline] stage
-[Pipeline] { (Sign Mac/iOS)
-Stage "Sign Mac/iOS" skipped due to earlier failure(s)
-[Pipeline] getContext
-[Pipeline] }
-[Pipeline] // stage
-[Pipeline] End of Pipeline
-ERROR: INPUT_FILE is not set! Make sure a file was uploaded or S3 path is valid.
-Finished: FAILURE
+try:
+    import configparser  # Python 3
+except ImportError:
+    import ConfigParser as configparser  # Python 2 fallback
+
+# Logger setup
+logger = logging.getLogger(__name__)
+FORMAT = "%(asctime)s {} {} - %(levelname)s - %(message)s".format(
+    os.uname()[1], os.environ.get('technician', 'SYSTEM')
+)
+logging.basicConfig(format=FORMAT, level=os.environ.get('LOGLEVEL', 'INFO'))
+
+# Config path
+DEFAULT_CREDENTIALS_FILE = os.path.join(expanduser("~"), '.mitsogo/credentials')
+configParser = configparser.ConfigParser()
+
+def getconfig(profile, variable, environment, default=""):
+    try:
+        configParser.read(os.environ.get('SHARED_CREDENTIALS_FILE', DEFAULT_CREDENTIALS_FILE))
+        value = configParser.get(profile, variable)
+    except Exception:
+        value = os.environ.get(environment, default)
+    return value
+
+def get_recent_repositories(gitlab_server, token, days):
+    headers = {'Private-Token': token}
+    since_date = datetime.utcnow() - timedelta(days=days)
+    updated_after_iso = since_date.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    url = f"{gitlab_server}/api/v4/projects?updated_after={updated_after_iso}&per_page=100&order_by=updated_at&sort=desc"
+    
+    repos = []
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            projects = response.json()
+            for project in projects:
+                repos.append([
+                    project.get('name'),
+                    project.get('web_url'),
+                    project.get('last_activity_at'),
+                    project.get('creator', {}).get('name', 'Unknown')
+                ])
+        else:
+            logger.error(f"Failed to fetch projects: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"Exception while fetching updated repositories: {str(e)}")
+    return repos
+
+def generate_report(outputlist, outputfile):
+    status = 1
+    try:
+        with open(outputfile, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['Repository Name', 'Web URL', 'Last Activity At', 'Created By'])
+            writer.writerows(outputlist)
+        logger.info(f"Report file {outputfile} generated successfully")
+        status = 0
+    except Exception as e:
+        logger.error("Unable to generate report: " + str(e))
+    return status
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="List GitLab repositories updated in the last N days.")
+    parser.add_argument("server", type=str, help="GitLab server address (without protocol)")
+    parser.add_argument("--days", type=int, default=7, help="Number of days to check for recent activity")
+    parser.add_argument("--outputfile", default="recent_gitlab_repos.csv", help="Output CSV file path")
+    args = parser.parse_args()
+
+    gitlab_server = "http://" + args.server
+    token = getconfig("gitlab", "token", "GITLAB_TOKEN")
+
+    if not token:
+        logger.error("GitLab token not found in credentials or environment.")
+        sys.exit(1)
+
+    repos = get_recent_repositories(gitlab_server, token, args.days)
+
+    if repos:
+        status = generate_report(repos, args.outputfile)
+    else:
+        logger.info("No repositories updated in the given period.")
+        status = 0
+
+    sys.exit(status)
 
 
 
+#!/bin/sh
 
+projectdir=$(readlink -f `dirname "$0"`)
 
+PATH=$PATH:/home/mitsadmin/.local/bin
 
-
-pipeline {
-    agent none
-
-    parameters {
-        choice(name: 'PLATFORM', choices: ['ANDROID', 'MAC', 'IOS'], description: 'Choose the platform')
-        choice(name: 'SOURCE_TYPE', choices: ['UPLOAD', 'S3'], description: 'Source: Upload or S3')
-        file(name: 'UPLOAD', description: 'Upload file (used if SOURCE_TYPE is UPLOAD)')
-        string(name: 'S3', defaultValue: '', description: 'S3 URL (used if SOURCE_TYPE is S3)')
-    }
-
-    stages {
-
-        stage('Sign Android') {
-            when {
-                expression { params.PLATFORM == 'ANDROID' }
-            }
-            agent { label 'built-in' }
-
-            steps {
-                withCredentials([
-                    string(credentialsId: 'ANDROID_KEY_PASSPHRASE', variable: 'ANDROID_PASSPHRASE'),
-                    file(credentialsId: 'jenkins_aws_credential', variable: 'AWS_SHARED_CREDENTIALS_FILE')
-                ]) {
-                    script {
-                        def inputFile = ''
-
-                        if (params.SOURCE_TYPE == 'S3') {
-                            echo "📥 Downloading from S3: ${params.S3}"
-                            sh "aws s3 cp '${params.S3}' ./downloaded_file"
-                            inputFile = 'downloaded_file'
-                        } else {
-                            sh "echo '📂 Workspace contents:' && ls -lh"
-
-                            def matchedFile = sh(
-                                script: "find . -maxdepth 1 -type f \\( -iname '*.apk' -o -iname '*.aab' \\) | head -n 1",
-                                returnStdout: true
-                            ).trim()
-
-                            if (!matchedFile) {
-                                error "❌ No .apk or .aab file found in workspace."
-                            }
-
-                            inputFile = matchedFile.replaceFirst("^\\./", "")
-                        }
-
-                        echo "✅ File to sign: ${inputFile}"
-                        def ext = inputFile.tokenize('.').last()
-
-                        if (ext == 'apk') {
-                            sh """
-                                apksigner sign \
-                                --ks "$WORKSPACE/certificate.jks" \
-                                --ks-key-alias "hexnodemdmapp" \
-                                --ks-pass pass:$ANDROID_PASSPHRASE \
-                                --key-pass pass:$ANDROID_PASSPHRASE \
-                                --out "signed_${inputFile}" \
-                                "${inputFile}"
-                            """
-                        } else if (ext == 'aab') {
-                            sh """
-                                jarsigner \
-                                -keystore "$WORKSPACE/certificate.jks" \
-                                -storepass "$ANDROID_PASSPHRASE" \
-                                -keypass "$ANDROID_PASSPHRASE" \
-                                -signedjar "signed_${inputFile}" \
-                                "${inputFile}" hexnodemdmapp
-                            """
-                        } else {
-                            error "❌ Unsupported Android file type: ${ext}"
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Sign Mac/iOS') {
-            when {
-                expression { params.PLATFORM == 'MAC' || params.PLATFORM == 'IOS' }
-            }
-            agent { label 'mac_mini_kochi' }
-
-            steps {
-                withCredentials([
-                    string(credentialsId: 'NOTARY_PASSWORD', variable: 'MAC'),
-                    file(credentialsId: 'jenkins_aws_credential', variable: 'AWS_SHARED_CREDENTIALS_FILE')
-                ]) {
-                    script {
-                        def inputFile = ''
-
-                        if (params.SOURCE_TYPE == 'S3') {
-                            echo "📥 Downloading from S3: ${params.S3}"
-                            sh "aws s3 cp '${params.S3}' ./downloaded_file"
-                            inputFile = 'downloaded_file'
-                        } else {
-                            sh "echo '📂 Workspace contents:' && ls -lh"
-
-                            def matchedFile = sh(
-                                script: "find . -maxdepth 1 -type f \\( -iname '*.ipa' -o -iname '*.zip' \\) | head -n 1",
-                                returnStdout: true
-                            ).trim()
-
-                            if (!matchedFile) {
-                                error "❌ No .ipa or .zip file found in workspace."
-                            }
-
-                            inputFile = matchedFile.replaceFirst("^\\./", "")
-                        }
-
-                        echo "✅ File to sign: ${inputFile}"
-                        def ext = inputFile.tokenize('.').last()
-                        def fileName = inputFile.tokenize('/').last()
-                        def baseName = fileName.replace(".${ext}", "")
-
-                        if (ext == 'ipa') {
-                            sh "xcrun altool --sign --file '${inputFile}'"
-                        } else if (ext == 'zip') {
-                            sh """
-                                unzip '${inputFile}'
-                                codesign -f --sign "Developer ID Application: Mitsogo Inc (BX6L6CPUN8)" "${baseName}.app"
-                                ditto -c -k --sequesterRsrc --keepParent "${baseName}.app" "${baseName}.app.zip"
-                            """
-                        } else {
-                            error "❌ Unsupported Mac/iOS file type: ${ext}"
-                        }
-                    }
-                }
-            }
-        }
-
-    }
+message() {
+    echo "$(date +'%Y-%m-%d %H:%M:%S') $HOSTNAME:$1"
 }
+
+message "info:changing working directory"
+cd "$projectdir"
+
+if [ ! -d reports ]; then
+    message "info:creating reports directory"
+    mkdir -p reports
+fi
+
+# GitLab server (change to actual GitLab hostname)
+gitlab_server="gitlab.example.com"
+
+# Number of days to check
+days=7
+
+# Output file
+gitlab_report="./GitLab_recent_repos_report_$(date +'%Y%m%d').csv"
+
+message "info:generating report for GitLab repositories updated in last $days days"
+python ./gitlab_recent_repos.py "$gitlab_server" --days "$days" --outputfile "$gitlab_report"
+exitcode=$?
+
+if [ $exitcode -eq 0 ]; then
+    message "info:successfully executed gitlab_recent_repos.py script"
+else
+    message "critical:failed to generate GitLab repo report with exit code $exitcode"
+    exit 1
+fi
+
+if [ -f "$gitlab_report" ]; then
+    message "info:uploading GitLab report to SharePoint"
+
+    var=$(sharepointupload "$gitlab_report" --site "Devops Drive" \
+        --drive_path /Devops_Scheduled_Reports/GitLab_recent_repos_report/)
+    exitcode=$?
+    link=$(echo "$var" | grep "sharing link" | cut -d : -f2-)
+
+    if [ $exitcode -ne 0 ] || [ -z "$link" ]; then
+        emailnotify "devops-team@mitsogo.com" \
+            "Recently Updated GitLab Repositories" \
+            "Report of GitLab repositories updated in the last $days days." \
+            --mailfrom "devops-reports@hexnodemdmnotifications.com" \
+            --attachment "$gitlab_report"
+    else
+        emailnotify "devops-team@mitsogo.com" \
+            "Recently Updated GitLab Repositories" \
+            "Report of GitLab repositories updated in the last $days days.\n${link}" \
+            --mailfrom "devops-reports@hexnodemdmnotifications.com"
+    fi
+
+    exitcode=$?
+    if [ $exitcode -ne 0 ]; then
+        message "critical:error while sending email notification of GitLab repo report"
+    else
+        message "info:successfully delivered email notification of GitLab repo report"
+        mv "$gitlab_report" reports/
+    fi
+else
+    message "info:no updated repositories found in the last $days days"
+fi
+
+exit $exitcode
